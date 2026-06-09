@@ -180,3 +180,25 @@ export async function resetPassword(email, otp_code, new_password) {
   if (!r.ok) throw new Error(data?.detail || "Password reset failed");
   return data;
 }
+
+export async function copilotChat({ messages, context }) {
+  const r = await fetch(`${BASE}/api/copilot`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ messages, context }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data?.detail || `Copilot failed (${r.status})`);
+  return data;
+}
+
+export async function googleAuth(credential) {
+  const r = await fetch(`${BASE}/auth/google`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ credential }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data?.detail || "Google sign-in failed");
+  return data;
+}

@@ -54,26 +54,36 @@ class SearchClient:
         wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
         reraise=True,
     )
-    async def search(self, query: str, *, max_results: int = 8) -> List[SearchHit]:
+    async def search(
+        self,
+        query: str,
+        *,
+        max_results: int = 8,
+        include_domains: Optional[List[str]] = None,
+    ) -> List[SearchHit]:
         if not self.enabled:
             raise SearchError("No search provider configured. Set TAVILY_API_KEY or SERPAPI_API_KEY.")
         if self.provider == "tavily":
-            return await self._tavily(query, max_results)
+            return await self._tavily(query, max_results, include_domains=include_domains)
         if self.provider == "serpapi":
             return await self._serpapi(query, max_results)
         raise SearchError(f"Unsupported search provider: {self.provider}")
 
     # ─── Tavily ────────────────────────────────────────────────
-    async def _tavily(self, query: str, max_results: int) -> List[SearchHit]:
+    async def _tavily(
+        self, query: str, max_results: int, include_domains: Optional[List[str]] = None
+    ) -> List[SearchHit]:
         url = "https://api.tavily.com/search"
         payload = {
             "api_key": settings.tavily_api_key,
             "query": query,
-            "search_depth": "basic",
+            "search_depth": "advanced",
             "include_images": True,
             "include_answer": False,
             "max_results": max_results,
         }
+        if include_domains:
+            payload["include_domains"] = include_domains
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(url, json=payload)
             r.raise_for_status()

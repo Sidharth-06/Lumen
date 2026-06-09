@@ -20,7 +20,8 @@ from .pipeline import recommend
 from .search import search_client
 from .auth.models import AuthUser
 from .auth.routes import router as auth_router
-from .auth.routes import current_user
+from .auth.routes import current_user, optional_user
+from .copilot import router as copilot_router
 from .trackify.routes import router as trackify_router
 from .trackify.scheduler import shutdown_scheduler, start_scheduler
 
@@ -42,6 +43,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(copilot_router)
 app.include_router(trackify_router)
 
 
@@ -69,8 +71,9 @@ async def health() -> HealthResponse:
 @app.post("/api/recommend", response_model=RecommendResponse)
 async def recommend_endpoint(
     req: RecommendRequest,
-    user: AuthUser = Depends(current_user),
+    user: AuthUser | None = Depends(optional_user),
 ) -> RecommendResponse:
+    """Open to guests for their first free search; auth enforced on the frontend for subsequent ones."""
     if not llm.enabled:
         raise HTTPException(
             status_code=503,

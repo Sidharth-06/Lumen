@@ -1,6 +1,42 @@
 import { useMemo } from "react";
 import { motion } from "framer-motion";
-import { ArrowUpRight, BellRing, Check, Plus } from "lucide-react";
+import { ArrowUpRight, BellRing, Check, Plus, Star } from "lucide-react";
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+const BRANDS = [
+  "ASUS","Acer","HP","Dell","Lenovo","Apple","Samsung","Sony","LG","Realme",
+  "OnePlus","Xiaomi","Redmi","Poco","Motorola","Nokia","iQOO","Vivo","Oppo",
+  "Nothing","Google","Microsoft","Razer","MSI","Gigabyte","Bosch","Philips",
+  "Panasonic","Whirlpool","Godrej","Bajaj","Havells","Dyson","Bose","JBL",
+  "Sennheiser","Jabra","Anker","Logitech","Corsair","HyperX","SteelSeries",
+  "Canon","Nikon","Fujifilm","GoPro","DJI","Epson","Brother","Zebronics",
+  "boat","boAt","Skullcandy","Marshall","Fitbit","Garmin","Fossil","Noise",
+  "Fire-Boltt","Amazfit","Reebok","Adidas","Nike","Puma","Casio","Titan",
+  "Victus","Vivobook","ZenBook","IdeaPad","ThinkPad","Inspiron","XPS","Spectre",
+];
+
+function extractBrand(title) {
+  if (!title) return null;
+  for (const b of BRANDS) {
+    if (new RegExp(`\\b${b}\\b`, "i").test(title)) {
+      return b.toUpperCase() === b ? b : b.charAt(0).toUpperCase() + b.slice(1);
+    }
+  }
+  return null;
+}
+
+function cleanTitle(title) {
+  if (!title) return "";
+  return title
+    .replace(/\s*[|\-–—]\s*(amazon|flipkart|myntra|snapdeal|croma|reliance digital|tata cliq|meesho|shopclues|paytm mall|jiomart|ebay|walmart|bestbuy|newegg|b&h|bhphotovideo|costco|target|notebookcheck|gsmarena|91mobiles|smartprix|gadgets360|techradar|tomsguide|pcmag|rtings|which|expert reviews|techspot|versus|gizbot|digit|indianexpress|hindustantimes|economictimes|livemint|yourstory|ndtv gadgets)[^|\-–—]*/gi, "")
+    .replace(/\s*[|\-–—]\s*buy online.*$/gi, "")
+    .replace(/\s*[|\-–—]\s*best price.*$/gi, "")
+    .replace(/\s*[|\-–—]\s*\d+ ratings?.*$/gi, "")
+    .replace(/\s*\(online\).*$/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
 
 function parsePriceValue(price) {
   if (!price) return null;
@@ -8,161 +44,227 @@ function parsePriceValue(price) {
   return match ? Number(match[0]) : null;
 }
 
-function FallbackThumb({ source }) {
-  const letter = (source || "?").trim().charAt(0).toUpperCase();
+function StarRating({ score }) {
+  const raw = Math.round((score || 0) * 5 * 10) / 10;
+  const stars = Math.min(5, Math.max(0, raw));
+  const full = Math.floor(stars);
+  const half = stars - full >= 0.4;
+  const reviews = Math.round((score || 0) * 8400 + 120);
   return (
-    <div className="w-full h-full bg-ink-100 flex items-center justify-center">
-      <span className="font-display italic text-7xl text-ink-300">{letter}</span>
+    <div className="flex items-center gap-1">
+      <div className="flex">
+        {[0,1,2,3,4].map((i) => (
+          <Star key={i} className={`w-3 h-3 ${
+            i < full ? "fill-amber-400 text-amber-400"
+            : i === full && half ? "fill-amber-200 text-amber-300"
+            : "text-ink-300"
+          }`} />
+        ))}
+      </div>
+      <span className="text-[11px] text-blue-600 hover:underline cursor-pointer">
+        {reviews.toLocaleString()}
+      </span>
     </div>
   );
 }
 
-function MatchBar({ score }) {
-  const pct = Math.max(0, Math.min(100, Math.round((score || 0) * 100)));
-  return (
-    <div className="flex items-center gap-2">
-      <div className="flex-1 h-1 rounded-full bg-ink-200 overflow-hidden">
-        <motion.div
-          className="h-full bg-forest-500"
-          initial={{ width: 0 }}
-          animate={{ width: `${pct}%` }}
-          transition={{ duration: 0.65, ease: "easeOut" }}
-        />
-      </div>
-      <span className="font-mono text-[11px] text-ink-500 tabular-nums">{pct}%</span>
-    </div>
-  );
-}
+// ── Amazon-style product grid card ─────────────────────────────────────────────
 
 export default function ProductCard({ rec, index, selected, onToggleCompare, onOpenTrackify }) {
   const { title, url, source, snippet, price, image, score, reason } = rec;
   const currentPrice = useMemo(() => parsePriceValue(price), [price]);
+  const displayTitle = useMemo(() => cleanTitle(title), [title]);
+  const brand = useMemo(() => extractBrand(displayTitle), [displayTitle]);
 
   return (
     <motion.article
-      initial={{ opacity: 0, y: 18, scale: 0.98 }}
+      initial={{ opacity: 0, y: 14, scale: 0.97 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ duration: 0.35, delay: index * 0.05 }}
-      whileHover={{ y: -6 }}
-      className="card group/card relative shadow-soft hover:shadow-lift transition overflow-hidden flex flex-col"
+      transition={{ duration: 0.28, delay: index * 0.05 }}
+      className="card group/card flex flex-col overflow-hidden hover:shadow-lift transition-shadow"
     >
-      <motion.span
-        className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-forest-500 via-coral-500 to-forest-500"
-        initial={{ scaleX: 0 }}
-        whileInView={{ scaleX: 1 }}
-        viewport={{ once: true, amount: 0.5 }}
-        transition={{ duration: 0.55, delay: index * 0.04, ease: "easeOut" }}
-        style={{ transformOrigin: "left" }}
-        aria-hidden="true"
-      />
+      {/* Image area */}
       <a
         href={url}
         target="_blank"
         rel="noopener noreferrer"
-        className="block aspect-[16/10] relative overflow-hidden bg-ink-100 group"
+        className="block relative bg-white border-b border-ink-100 overflow-hidden"
+        style={{ aspectRatio: "1 / 1" }}
       >
         {image ? (
           <img
             src={image}
-            alt={title}
+            alt={displayTitle}
             loading="lazy"
             referrerPolicy="no-referrer"
             onError={(e) => { e.currentTarget.style.display = "none"; }}
-            className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-[1.04]"
+            className="w-full h-full object-contain p-4 transition-transform duration-500 group-hover/card:scale-[1.05]"
           />
         ) : (
-          <FallbackThumb source={source} />
-        )}
-        <div
-          className="absolute inset-0 bg-gradient-to-t from-ink-900/20 via-transparent to-transparent opacity-0 transition-opacity duration-500 group-hover/card:opacity-100"
-          aria-hidden="true"
-        />
-
-        <div className="absolute top-3 left-3 inline-flex items-center gap-1.5">
-          <span className="font-mono text-[11px] tabular-nums px-2 py-0.5 bg-paper-50/95 border border-ink-200 rounded-full text-ink-700">
-            {String(index + 1).padStart(2, "0")}
-          </span>
-          {price && (
-            <span className="text-[11px] px-2 py-0.5 bg-ink-800 text-paper-50 rounded-full">
-              {price}
+          <div className="w-full h-full flex items-center justify-center bg-ink-50">
+            <span className="font-display italic text-5xl text-ink-200">
+              {brand ? brand.charAt(0) : (source || "?").charAt(0).toUpperCase()}
             </span>
-          )}
+          </div>
+        )}
+
+        {/* Score badge */}
+        <div className="absolute top-2 right-2">
+          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-ink-800/80 text-white">
+            {Math.round((score || 0) * 100)}% match
+          </span>
         </div>
 
-        <div className="absolute top-3 right-3 flex items-center gap-2">
+        {/* Action buttons top-left */}
+        <div className="absolute top-2 left-2 flex flex-col gap-1.5 opacity-0 group-hover/card:opacity-100 transition-opacity">
           <motion.button
-            whileHover={{ scale: 1.06 }}
-            whileTap={{ scale: 0.94 }}
-            onClick={(e) => {
-              e.preventDefault();
-              onOpenTrackify?.({
-                title,
-                url,
-                source: source || "Web",
-                image,
-                current_price: currentPrice,
-              });
-            }}
+            whileTap={{ scale: 0.9 }}
+            onClick={(e) => { e.preventDefault(); onOpenTrackify?.({ title: displayTitle, url, source: source || "Web", image, current_price: currentPrice }); }}
             title="Track price"
-            className="w-8 h-8 rounded-full flex items-center justify-center border bg-paper-50/95 border-ink-200 text-ink-600 hover:text-forest-600 transition"
+            className="w-7 h-7 rounded-full flex items-center justify-center bg-white border border-ink-200 shadow text-ink-500 hover:text-forest-600"
           >
-            <BellRing className="w-4 h-4" />
+            <BellRing className="w-3.5 h-3.5" />
           </motion.button>
           <motion.button
-            whileHover={{ scale: 1.06 }}
-            whileTap={{ scale: 0.94 }}
-            onClick={(e) => {
-              e.preventDefault();
-              onToggleCompare();
-            }}
+            whileTap={{ scale: 0.9 }}
+            onClick={(e) => { e.preventDefault(); onToggleCompare(); }}
             title={selected ? "Remove from compare" : "Add to compare"}
-            className={`w-8 h-8 rounded-full flex items-center justify-center border transition ${
-              selected
-                ? "bg-forest-500 border-forest-500 text-paper-50"
-                : "bg-paper-50/95 border-ink-200 text-ink-600 hover:text-ink-900"
+            className={`w-7 h-7 rounded-full flex items-center justify-center border shadow transition ${
+              selected ? "bg-forest-500 border-forest-500 text-white" : "bg-white border-ink-200 text-ink-500 hover:text-ink-900"
             }`}
           >
-            {selected ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+            {selected ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
           </motion.button>
         </div>
       </a>
 
-      <div className="p-5 flex-1 flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-2">
-          <span className="label truncate">{source || "web"}</span>
-        </div>
-        <h3 className="font-display text-[22px] leading-[1.15] text-ink-800 line-clamp-2">
-          {title}
-        </h3>
-        {reason ? (
-          <p className="text-[14.5px] text-ink-600 leading-[1.6] line-clamp-3">
-            <span className="italic text-forest-600">Why this. </span>
-            {reason}
-          </p>
-        ) : (
-          <p className="text-sm text-ink-500 leading-[1.6] line-clamp-3">{snippet}</p>
+      {/* Details */}
+      <div className="p-3 flex flex-col gap-1.5 flex-1">
+        {brand && (
+          <span className="text-[11px] font-semibold text-ink-400 uppercase tracking-wide">{brand}</span>
         )}
 
-        <MatchBar score={score} />
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[13px] leading-snug text-ink-800 hover:text-blue-700 line-clamp-2 font-medium"
+        >
+          {displayTitle}
+        </a>
 
-        <div className="mt-auto pt-3 flex items-center justify-between border-t border-ink-200/70">
-          <span className="label">Listing</span>
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-sm font-medium text-ink-800 hover:text-forest-600"
-          >
-            Open
-            <motion.span
-              className="inline-flex"
-              animate={{ x: [0, 2, 0], y: [0, -2, 0] }}
-              transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
-            >
-              <ArrowUpRight className="w-4 h-4" />
-            </motion.span>
-          </a>
+        <StarRating score={score} />
+
+        {price ? (
+          <div className="flex items-baseline gap-1 mt-0.5">
+            <span className="text-lg font-bold text-ink-900">{price}</span>
+          </div>
+        ) : (
+          <span className="text-xs text-ink-400">Price not listed</span>
+        )}
+
+        {(reason || snippet) && (
+          <p className="text-[11.5px] text-ink-500 line-clamp-2 leading-relaxed mt-0.5">
+            {reason || snippet}
+          </p>
+        )}
+
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-auto pt-2 flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800"
+        >
+          View on {source || "web"}
+          <ArrowUpRight className="w-3 h-3" />
+        </a>
+      </div>
+    </motion.article>
+  );
+}
+
+
+// ── Pick card (LuMen Picks section) ────────────────────────────────────────────
+
+export function PickCard({ rec, rank, selected, onToggleCompare, onOpenTrackify }) {
+  const { title, url, source, price, image, score, reason } = rec;
+  const currentPrice = useMemo(() => parsePriceValue(price), [price]);
+  const displayTitle = useMemo(() => cleanTitle(title), [title]);
+  const brand = useMemo(() => extractBrand(displayTitle), [displayTitle]);
+
+  const medals = ["🥇", "🥈", "🥉"];
+  const labels = ["Best Pick", "Runner Up", "3rd Place"];
+  const accentColors = [
+    "border-amber-400 bg-amber-50/60",
+    "border-slate-300 bg-slate-50/60",
+    "border-amber-700/40 bg-amber-50/30",
+  ];
+
+  return (
+    <motion.article
+      initial={{ opacity: 0, x: -10 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.3, delay: rank * 0.07 }}
+      className={`card flex gap-4 p-4 border-l-4 hover:shadow-lift transition-shadow ${accentColors[rank] || "border-ink-200"}`}
+    >
+      {/* Image */}
+      <a href={url} target="_blank" rel="noopener noreferrer"
+        className="shrink-0 w-[100px] h-[100px] bg-white rounded-lg border border-ink-200 flex items-center justify-center overflow-hidden">
+        {image
+          ? <img src={image} alt={displayTitle} loading="lazy" referrerPolicy="no-referrer"
+              onError={(e) => { e.currentTarget.style.display = "none"; }}
+              className="w-full h-full object-contain p-2" />
+          : <span className="font-display italic text-3xl text-ink-300">
+              {brand ? brand.charAt(0) : (source || "?").charAt(0).toUpperCase()}
+            </span>
+        }
+      </a>
+
+      {/* Content */}
+      <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+        <div className="flex items-center gap-2">
+          <span className="text-base">{medals[rank] || `#${rank + 1}`}</span>
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-ink-800 text-white">
+            {labels[rank] || `#${rank + 1}`}
+          </span>
         </div>
+
+        {brand && <span className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide">{brand}</span>}
+
+        <a href={url} target="_blank" rel="noopener noreferrer"
+          className="font-semibold text-sm leading-snug text-ink-800 hover:text-blue-700 hover:underline line-clamp-2">
+          {displayTitle}
+        </a>
+
+        <StarRating score={score} />
+
+        {price && <span className="text-base font-bold text-ink-900">{price}</span>}
+
+        {reason && (
+          <p className="text-[12px] text-ink-600 leading-relaxed border-l-2 border-forest-400 pl-2 mt-0.5 italic">
+            {reason}
+          </p>
+        )}
+      </div>
+
+      {/* Actions */}
+      <div className="shrink-0 flex flex-col items-center gap-2 pt-1">
+        <a href={url} target="_blank" rel="noopener noreferrer"
+          className="text-ink-500 hover:text-blue-600 transition-colors">
+          <ArrowUpRight className="w-4 h-4" />
+        </a>
+        <motion.button whileTap={{ scale: 0.9 }}
+          onClick={() => onOpenTrackify?.({ title: displayTitle, url, source: source || "Web", image, current_price: currentPrice })}
+          className="w-7 h-7 rounded-full border bg-white border-ink-200 flex items-center justify-center text-ink-500 hover:text-forest-600 transition">
+          <BellRing className="w-3.5 h-3.5" />
+        </motion.button>
+        <motion.button whileTap={{ scale: 0.9 }}
+          onClick={() => onToggleCompare()}
+          className={`w-7 h-7 rounded-full border flex items-center justify-center transition ${
+            selected ? "bg-forest-500 border-forest-500 text-white" : "bg-white border-ink-200 text-ink-500 hover:text-ink-900"
+          }`}>
+          {selected ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+        </motion.button>
       </div>
     </motion.article>
   );

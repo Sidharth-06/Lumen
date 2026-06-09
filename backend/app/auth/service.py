@@ -1,4 +1,4 @@
-"""SQLite-backed auth helpers."""
+"""MongoDB-backed auth helpers."""
 from __future__ import annotations
 
 import base64
@@ -7,14 +7,13 @@ import hmac
 import json
 import os
 import secrets
-import sqlite3
 import time
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import bcrypt
 
+from ..db import ensure_indexes, next_id, otps_col, users_col
 from ..trackify.email_service import send_password_reset_otp
-from ..trackify.service import _connect
 from .models import AuthUser
 
 TOKEN_TTL_SECONDS = 60 * 60 * 24 * 14
@@ -27,33 +26,7 @@ def _secret() -> str:
 
 
 def init_auth_db() -> None:
-    with _connect() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL,
-                password_hash TEXT,
-                avatar_url TEXT,
-                provider TEXT NOT NULL DEFAULT 'local',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS password_reset_otps (
-                email TEXT PRIMARY KEY,
-                otp_hash TEXT NOT NULL,
-                expires_at INTEGER NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                verified INTEGER NOT NULL DEFAULT 0,
-                created_at INTEGER NOT NULL
-            )
-            """
-        )
+    ensure_indexes()
 
 
 def _hash_password(password: str, salt: str | None = None) -> str:
@@ -91,62 +64,89 @@ def _verify_otp_hash(otp_code: str, otp_hash: str) -> bool:
         return False
 
 
-def _row_to_user(row: sqlite3.Row) -> AuthUser:
+def _doc_to_user(doc: Dict[str, Any]) -> AuthUser:
     return AuthUser(
-        id=int(row["id"]),
-        email=row["email"],
-        name=row["name"],
-        avatar_url=row["avatar_url"],
-        provider=row["provider"],
+        id=int(doc["id"]),
+        email=doc["email"],
+        name=doc["name"],
+        avatar_url=doc.get("avatar_url"),
+        provider=doc.get("provider", "local"),
     )
 
 
 def get_user_by_id(user_id: int) -> Optional[AuthUser]:
     init_auth_db()
-    with _connect() as conn:
-        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    return _row_to_user(row) if row else None
+    doc = users_col().find_one({"id": int(user_id)})
+    return _doc_to_user(doc) if doc else None
 
 
 def get_user_by_email(email: str) -> Optional[AuthUser]:
     init_auth_db()
-    with _connect() as conn:
-        row = conn.execute("SELECT * FROM users WHERE email = ?", (email.lower(),)).fetchone()
-    return _row_to_user(row) if row else None
+    doc = users_col().find_one({"email": email.lower()})
+    return _doc_to_user(doc) if doc else None
 
 
 def create_user(email: str, password: str, name: str) -> AuthUser:
     init_auth_db()
-    with _connect() as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO users (email, name, password_hash, provider)
-            VALUES (?, ?, ?, 'local')
-            """,
-            (email.lower(), name.strip(), _hash_password(password)),
+    now = int(time.time())
+    doc = {
+        "id": next_id("users"),
+        "email": email.lower(),
+        "name": name.strip(),
+        "password_hash": _hash_password(password),
+        "avatar_url": None,
+        "provider": "local",
+        "created_at": now,
+        "updated_at": now,
+    }
+    users_col().insert_one(doc)
+    return _doc_to_user(doc)
+
+
+def upsert_google_user(email: str, name: str, avatar_url: str | None = None) -> AuthUser:
+    """Create or update a user authenticated via Google."""
+    init_auth_db()
+    now = int(time.time())
+    existing = users_col().find_one({"email": email.lower()})
+    if existing:
+        users_col().update_one(
+            {"email": email.lower()},
+            {"$set": {"name": name.strip() or existing["name"],
+                      "avatar_url": avatar_url or existing.get("avatar_url"),
+                      "updated_at": now}},
         )
-        row = conn.execute("SELECT * FROM users WHERE id = ?", (cursor.lastrowid,)).fetchone()
-    return _row_to_user(row)
+        doc = users_col().find_one({"email": email.lower()})
+        return _doc_to_user(doc)
+    doc = {
+        "id": next_id("users"),
+        "email": email.lower(),
+        "name": name.strip(),
+        "password_hash": None,
+        "avatar_url": avatar_url,
+        "provider": "google",
+        "created_at": now,
+        "updated_at": now,
+    }
+    users_col().insert_one(doc)
+    return _doc_to_user(doc)
 
 
 def authenticate_user(email: str, password: str) -> Optional[AuthUser]:
     init_auth_db()
-    with _connect() as conn:
-        row = conn.execute("SELECT * FROM users WHERE email = ?", (email.lower(),)).fetchone()
-    if not row or not _verify_password(password, row["password_hash"]):
+    doc = users_col().find_one({"email": email.lower()})
+    if not doc or not _verify_password(password, doc.get("password_hash")):
         return None
-    return _row_to_user(row)
+    return _doc_to_user(doc)
 
 
 def update_user_name(user_id: int, name: str) -> Optional[AuthUser]:
     init_auth_db()
-    with _connect() as conn:
-        conn.execute(
-            "UPDATE users SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (name.strip(), user_id),
-        )
-        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    return _row_to_user(row) if row else None
+    users_col().update_one(
+        {"id": int(user_id)},
+        {"$set": {"name": name.strip(), "updated_at": int(time.time())}},
+    )
+    doc = users_col().find_one({"id": int(user_id)})
+    return _doc_to_user(doc) if doc else None
 
 
 def request_password_reset(email: str) -> bool:
@@ -157,20 +157,17 @@ def request_password_reset(email: str) -> bool:
         return True
     otp_code = f"{secrets.randbelow(10000):04d}"
     now = int(time.time())
-    with _connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO password_reset_otps (email, otp_hash, expires_at, attempts, verified, created_at)
-            VALUES (?, ?, ?, 0, 0, ?)
-            ON CONFLICT(email) DO UPDATE SET
-                otp_hash = excluded.otp_hash,
-                expires_at = excluded.expires_at,
-                attempts = 0,
-                verified = 0,
-                created_at = excluded.created_at
-            """,
-            (normalized, _hash_otp(otp_code), now + OTP_TTL_SECONDS, now),
-        )
+    otps_col().update_one(
+        {"email": normalized},
+        {"$set": {
+            "otp_hash": _hash_otp(otp_code),
+            "expires_at": now + OTP_TTL_SECONDS,
+            "attempts": 0,
+            "verified": False,
+            "created_at": now,
+        }},
+        upsert=True,
+    )
     return send_password_reset_otp(normalized, otp_code)
 
 
@@ -178,23 +175,13 @@ def verify_password_reset_otp(email: str, otp_code: str) -> bool:
     init_auth_db()
     normalized = email.lower()
     now = int(time.time())
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM password_reset_otps WHERE email = ?",
-            (normalized,),
-        ).fetchone()
-        if not row or row["expires_at"] < now or row["attempts"] >= OTP_MAX_ATTEMPTS:
-            return False
-        if not _verify_otp_hash(otp_code, row["otp_hash"]):
-            conn.execute(
-                "UPDATE password_reset_otps SET attempts = attempts + 1 WHERE email = ?",
-                (normalized,),
-            )
-            return False
-        conn.execute(
-            "UPDATE password_reset_otps SET verified = 1 WHERE email = ?",
-            (normalized,),
-        )
+    doc = otps_col().find_one({"email": normalized})
+    if not doc or doc["expires_at"] < now or doc["attempts"] >= OTP_MAX_ATTEMPTS:
+        return False
+    if not _verify_otp_hash(otp_code, doc["otp_hash"]):
+        otps_col().update_one({"email": normalized}, {"$inc": {"attempts": 1}})
+        return False
+    otps_col().update_one({"email": normalized}, {"$set": {"verified": True}})
     return True
 
 
@@ -202,25 +189,19 @@ def reset_password(email: str, otp_code: str, new_password: str) -> bool:
     init_auth_db()
     normalized = email.lower()
     now = int(time.time())
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM password_reset_otps WHERE email = ?",
-            (normalized,),
-        ).fetchone()
-        if not row or row["expires_at"] < now or row["attempts"] >= OTP_MAX_ATTEMPTS:
-            return False
-        if not row["verified"] and not _verify_otp_hash(otp_code, row["otp_hash"]):
-            conn.execute(
-                "UPDATE password_reset_otps SET attempts = attempts + 1 WHERE email = ?",
-                (normalized,),
-            )
-            return False
-        updated = conn.execute(
-            "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?",
-            (_hash_password_bcrypt(new_password), normalized),
-        )
-        conn.execute("DELETE FROM password_reset_otps WHERE email = ?", (normalized,))
-    return updated.rowcount > 0
+    doc = otps_col().find_one({"email": normalized})
+    if not doc or doc["expires_at"] < now or doc["attempts"] >= OTP_MAX_ATTEMPTS:
+        return False
+    if not doc.get("verified") and not _verify_otp_hash(otp_code, doc["otp_hash"]):
+        otps_col().update_one({"email": normalized}, {"$inc": {"attempts": 1}})
+        return False
+    result = users_col().update_one(
+        {"email": normalized},
+        {"$set": {"password_hash": _hash_password_bcrypt(new_password),
+                  "updated_at": now}},
+    )
+    otps_col().delete_one({"email": normalized})
+    return result.matched_count > 0
 
 
 def create_token(user: AuthUser) -> str:

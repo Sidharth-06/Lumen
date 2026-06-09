@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
+from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from .models import (
@@ -113,3 +114,21 @@ async def reset_password_route(payload: ResetPasswordRequest) -> MessageResponse
     if not ok:
         raise HTTPException(status_code=400, detail="Invalid or expired verification code")
     return MessageResponse(message="Password updated successfully.")
+
+
+class GoogleAuthRequest(BaseModel):
+    credential: str
+
+
+@router.post("/google", response_model=AuthResponse)
+async def google_login(payload: GoogleAuthRequest) -> AuthResponse:
+    """Exchange a Google ID token for a LuMen session token."""
+    from .google_service import verify_google_token, upsert_google_user
+    google_user = await run_in_threadpool(verify_google_token, payload.credential)
+    if not google_user:
+        raise HTTPException(status_code=401, detail="Invalid Google credential")
+    user = await run_in_threadpool(upsert_google_user, google_user)
+    if not user:
+        raise HTTPException(status_code=500, detail="Could not create or fetch account")
+    return AuthResponse(token=create_token(user), user=user)
+

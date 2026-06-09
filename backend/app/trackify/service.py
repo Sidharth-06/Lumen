@@ -1,268 +1,185 @@
-"""SQLite-backed storage and price extraction helpers for Trackify."""
+"""MongoDB-backed storage and price extraction helpers for Trackify."""
 from __future__ import annotations
 
-import os
 import re
-import json
-import sqlite3
-from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Iterator, Optional
+from typing import Any, Dict, Optional
 
+from pymongo import ReturnDocument
+
+from ..db import ensure_indexes, next_id, track_items_col
 from .models import TrackItem, TrackItemCreate
-
-DEFAULT_DB_PATH = Path(__file__).resolve().parents[3] / "trackify.sqlite3"
-DB_PATH = Path(os.getenv("TRACKIFY_DB_PATH", str(DEFAULT_DB_PATH)))
-
-
-@contextmanager
-def _connect() -> Iterator[sqlite3.Connection]:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def init_db() -> None:
-    with _connect() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS track_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                product_name TEXT NOT NULL,
-                product_url TEXT NOT NULL,
-                last_checked_price REAL,
-                target_price REAL NOT NULL,
-                user_email TEXT NOT NULL,
-                notified BOOLEAN NOT NULL DEFAULT FALSE,
-                created_at TEXT NOT NULL,
-                last_checked_at TEXT
-            )
-            """
-        )
-        existing = {row["name"] for row in conn.execute("PRAGMA table_info(track_items)").fetchall()}
-        migrations = {
-            "user_id": "ALTER TABLE track_items ADD COLUMN user_id INTEGER",
-            "notification_count": "ALTER TABLE track_items ADD COLUMN notification_count INTEGER NOT NULL DEFAULT 0",
-            "last_notified_at": "ALTER TABLE track_items ADD COLUMN last_notified_at TEXT",
-            "image": "ALTER TABLE track_items ADD COLUMN image TEXT",
-            "source": "ALTER TABLE track_items ADD COLUMN source TEXT NOT NULL DEFAULT 'Web'",
-            "price_history": "ALTER TABLE track_items ADD COLUMN price_history TEXT NOT NULL DEFAULT '[]'",
-        }
-        for column, statement in migrations.items():
-            if column not in existing:
-                conn.execute(statement)
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_track_items_next_batch "
-            "ON track_items(notified, last_checked_at, created_at)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_track_items_user_email "
-            "ON track_items(user_id, user_email)"
-        )
+    ensure_indexes()
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _row_to_item(row: sqlite3.Row) -> TrackItem:
-    data = dict(row)
-    data["notified"] = bool(data["notified"])
-    try:
-        data["price_history"] = json.loads(data.get("price_history") or "[]")
-    except Exception:
-        data["price_history"] = []
-    return TrackItem(**data)
+def _doc_to_item(doc: Dict[str, Any]) -> TrackItem:
+    return TrackItem(
+        id=int(doc["id"]),
+        user_id=doc.get("user_id"),
+        product_name=doc["product_name"],
+        product_url=doc["product_url"],
+        source=doc.get("source") or "Web",
+        image=doc.get("image"),
+        last_checked_price=doc.get("last_checked_price"),
+        target_price=float(doc["target_price"]),
+        user_email=doc.get("user_email") or "",
+        notified=bool(doc.get("notified", False)),
+        notification_count=int(doc.get("notification_count", 0)),
+        created_at=doc["created_at"],
+        last_checked_at=doc.get("last_checked_at"),
+        last_notified_at=doc.get("last_notified_at"),
+        price_history=doc.get("price_history") or [],
+    )
 
 
 def add_track_item(payload: TrackItemCreate, user_id: int | None = None, user_email: str | None = None) -> TrackItem:
     init_db()
     owner_email = (payload.user_email or user_email or "").strip().lower()
-    history = []
+    history: list[dict] = []
     if payload.current_price:
         history.append({"price": payload.current_price, "checked_at": _now_iso()})
-    with _connect() as conn:
-        existing = conn.execute(
-            "SELECT * FROM track_items WHERE user_id = ? AND product_url = ?",
-            (user_id, str(payload.product_url)),
-        ).fetchone()
-        if existing:
-            conn.execute(
-                """
-                UPDATE track_items
-                SET product_name = ?,
-                    source = ?,
-                    image = ?,
-                    last_checked_price = ?,
-                    target_price = ?,
-                    user_email = ?,
-                    notified = FALSE,
-                    last_checked_at = ?,
-                    price_history = ?
-                WHERE id = ?
-                """,
-                (
-                    (payload.product_name or str(payload.product_url)).strip(),
-                    payload.source or existing["source"] or "Web",
-                    payload.image or existing["image"],
-                    payload.current_price,
-                    float(payload.target_price),
-                    owner_email,
-                    _now_iso() if payload.current_price else existing["last_checked_at"],
-                    json.dumps(history or json.loads(existing["price_history"] or "[]")),
-                    existing["id"],
-                ),
-            )
-            updated = conn.execute("SELECT * FROM track_items WHERE id = ?", (existing["id"],)).fetchone()
-            return _row_to_item(updated)
-        cursor = conn.execute(
-            """
-            INSERT INTO track_items (
-                user_id, product_name, product_url, source, image, last_checked_price, target_price, user_email, created_at, last_checked_at, price_history
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user_id,
-                (payload.product_name or str(payload.product_url)).strip(),
-                str(payload.product_url),
-                payload.source or "Web",
-                payload.image,
-                payload.current_price,
-                float(payload.target_price),
-                owner_email,
-                _now_iso(),
-                _now_iso() if payload.current_price else None,
-                json.dumps(history),
-            ),
+
+    col = track_items_col()
+    existing = col.find_one({"user_id": user_id, "product_url": str(payload.product_url)})
+    if existing:
+        col.update_one(
+            {"id": existing["id"]},
+            {"$set": {
+                "product_name": (payload.product_name or str(payload.product_url)).strip(),
+                "source": payload.source or existing.get("source") or "Web",
+                "image": payload.image or existing.get("image"),
+                "last_checked_price": payload.current_price,
+                "target_price": float(payload.target_price),
+                "user_email": owner_email,
+                "notified": False,
+                "last_checked_at": _now_iso() if payload.current_price else existing.get("last_checked_at"),
+                "price_history": history or existing.get("price_history") or [],
+            }},
         )
-        row = conn.execute(
-            "SELECT * FROM track_items WHERE id = ?",
-            (cursor.lastrowid,),
-        ).fetchone()
-    return _row_to_item(row)
+        return _doc_to_item(col.find_one({"id": existing["id"]}))
+
+    doc = {
+        "id": next_id("track_items"),
+        "user_id": user_id,
+        "product_name": (payload.product_name or str(payload.product_url)).strip(),
+        "product_url": str(payload.product_url),
+        "source": payload.source or "Web",
+        "image": payload.image,
+        "last_checked_price": payload.current_price,
+        "target_price": float(payload.target_price),
+        "user_email": owner_email,
+        "notified": False,
+        "notification_count": 0,
+        "created_at": _now_iso(),
+        "last_checked_at": _now_iso() if payload.current_price else None,
+        "last_notified_at": None,
+        "price_history": history,
+    }
+    col.insert_one(doc)
+    return _doc_to_item(doc)
 
 
 def list_track_items(user_id: int | None = None, user_email: str | None = None) -> list[TrackItem]:
     init_db()
-    with _connect() as conn:
-        if user_id is not None:
-            rows = conn.execute(
-                "SELECT * FROM track_items WHERE user_id = ? OR user_email = ? ORDER BY created_at DESC",
-                (user_id, (user_email or "").lower()),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM track_items ORDER BY created_at DESC"
-            ).fetchall()
-    return [_row_to_item(row) for row in rows]
+    col = track_items_col()
+    if user_id is not None:
+        cursor = col.find(
+            {"$or": [{"user_id": user_id}, {"user_email": (user_email or "").lower()}]}
+        ).sort("created_at", -1)
+    else:
+        cursor = col.find().sort("created_at", -1)
+    return [_doc_to_item(d) for d in cursor]
 
 
 def get_track_item(item_id: int) -> Optional[TrackItem]:
     init_db()
-    with _connect() as conn:
-        row = conn.execute("SELECT * FROM track_items WHERE id = ?", (item_id,)).fetchone()
-    return _row_to_item(row) if row else None
+    doc = track_items_col().find_one({"id": int(item_id)})
+    return _doc_to_item(doc) if doc else None
 
 
 def get_track_item_for_user(item_id: int, user_id: int, user_email: str) -> Optional[TrackItem]:
     init_db()
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM track_items WHERE id = ? AND (user_id = ? OR user_email = ?)",
-            (item_id, user_id, user_email.lower()),
-        ).fetchone()
-    return _row_to_item(row) if row else None
+    doc = track_items_col().find_one({
+        "id": int(item_id),
+        "$or": [{"user_id": user_id}, {"user_email": user_email.lower()}],
+    })
+    return _doc_to_item(doc) if doc else None
 
 
 def remove_track_item(item_id: int, user_id: int | None = None, user_email: str | None = None) -> bool:
     init_db()
-    with _connect() as conn:
-        if user_id is not None:
-            cursor = conn.execute(
-                "DELETE FROM track_items WHERE id = ? AND (user_id = ? OR user_email = ?)",
-                (item_id, user_id, (user_email or "").lower()),
-            )
-        else:
-            cursor = conn.execute("DELETE FROM track_items WHERE id = ?", (item_id,))
-    return cursor.rowcount > 0
+    if user_id is not None:
+        result = track_items_col().delete_one({
+            "id": int(item_id),
+            "$or": [{"user_id": user_id}, {"user_email": (user_email or "").lower()}],
+        })
+    else:
+        result = track_items_col().delete_one({"id": int(item_id)})
+    return result.deleted_count > 0
 
 
 def get_batch(limit: int = 15) -> list[TrackItem]:
     init_db()
     safe_limit = max(1, min(limit, 20))
-    with _connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT * FROM track_items
-            ORDER BY
-                CASE WHEN last_checked_at IS NULL THEN 0 ELSE 1 END,
-                last_checked_at ASC,
-                created_at ASC
-            LIMIT ?
-            """,
-            (safe_limit,),
-        ).fetchall()
-    return [_row_to_item(row) for row in rows]
+    # Items never checked first, then oldest-checked first
+    docs = list(
+        track_items_col().aggregate([
+            {"$addFields": {"_never_checked": {"$cond": [{"$ifNull": ["$last_checked_at", False]}, 1, 0]}}},
+            {"$sort": {"_never_checked": 1, "last_checked_at": 1, "created_at": 1}},
+            {"$limit": safe_limit},
+        ])
+    )
+    return [_doc_to_item(d) for d in docs]
 
 
 def update_checked_price(item_id: int, price: Optional[float]) -> None:
-    with _connect() as conn:
-        row = conn.execute("SELECT price_history FROM track_items WHERE id = ?", (item_id,)).fetchone()
-        history = []
-        if row:
-            try:
-                history = json.loads(row["price_history"] or "[]")
-            except Exception:
-                history = []
-        if price is not None:
-            history.append({"price": price, "checked_at": _now_iso()})
-            history = history[-50:]
-        conn.execute(
-            """
-            UPDATE track_items
-            SET last_checked_price = ?, last_checked_at = ?, price_history = ?
-            WHERE id = ?
-            """,
-            (price, _now_iso(), json.dumps(history), item_id),
-        )
+    init_db()
+    col = track_items_col()
+    doc = col.find_one({"id": int(item_id)}, {"price_history": 1})
+    history = (doc or {}).get("price_history") or []
+    if price is not None:
+        history.append({"price": price, "checked_at": _now_iso()})
+        history = history[-50:]
+    col.update_one(
+        {"id": int(item_id)},
+        {"$set": {
+            "last_checked_price": price,
+            "last_checked_at": _now_iso(),
+            "price_history": history,
+        }},
+    )
 
 
 def mark_notified(item_id: int) -> None:
-    with _connect() as conn:
-        conn.execute(
-            """
-            UPDATE track_items
-            SET notified = TRUE,
-                notification_count = notification_count + 1,
-                last_notified_at = ?
-            WHERE id = ?
-            """,
-            (_now_iso(), item_id),
-        )
+    init_db()
+    track_items_col().update_one(
+        {"id": int(item_id)},
+        {"$set": {"notified": True, "last_notified_at": _now_iso()},
+         "$inc": {"notification_count": 1}},
+    )
 
 
 def attach_items_to_user(user_id: int, user_email: str) -> None:
     init_db()
-    with _connect() as conn:
-        conn.execute(
-            "UPDATE track_items SET user_id = ? WHERE user_email = ? AND user_id IS NULL",
-            (user_id, user_email.lower()),
-        )
+    track_items_col().update_many(
+        {"user_email": user_email.lower(), "user_id": None},
+        {"$set": {"user_id": user_id}},
+    )
 
 
 def reset_notification(item_id: int) -> None:
-    with _connect() as conn:
-        conn.execute(
-            "UPDATE track_items SET notified = FALSE WHERE id = ?",
-            (item_id,),
-        )
+    init_db()
+    track_items_col().update_one(
+        {"id": int(item_id)},
+        {"$set": {"notified": False}},
+    )
 
 
 def update_target_price(
@@ -272,23 +189,16 @@ def update_target_price(
     user_email: str | None = None,
 ) -> Optional[TrackItem]:
     init_db()
-    with _connect() as conn:
-        if user_id is not None:
-            conn.execute(
-                """
-                UPDATE track_items
-                SET target_price = ?, notified = FALSE
-                WHERE id = ? AND (user_id = ? OR user_email = ?)
-                """,
-                (target_price, item_id, user_id, (user_email or "").lower()),
-            )
-        else:
-            conn.execute(
-                "UPDATE track_items SET target_price = ?, notified = FALSE WHERE id = ?",
-                (target_price, item_id),
-            )
-        row = conn.execute("SELECT * FROM track_items WHERE id = ?", (item_id,)).fetchone()
-    return _row_to_item(row) if row else None
+    col = track_items_col()
+    query: Dict[str, Any] = {"id": int(item_id)}
+    if user_id is not None:
+        query["$or"] = [{"user_id": user_id}, {"user_email": (user_email or "").lower()}]
+    doc = col.find_one_and_update(
+        query,
+        {"$set": {"target_price": float(target_price), "notified": False}},
+        return_document=ReturnDocument.AFTER,
+    )
+    return _doc_to_item(doc) if doc else None
 
 
 PRICE_PATTERNS: tuple[re.Pattern[str], ...] = (

@@ -11,8 +11,9 @@ import SummaryPanel from "./components/SummaryPanel.jsx";
 import ResultsGrid from "./components/ResultsGrid.jsx";
 import RefineBar from "./components/RefineBar.jsx";
 import CompareDrawer from "./components/CompareDrawer.jsx";
-import ProfilePanel from "./components/ProfilePanel.jsx";
+import AuthModal from "./components/auth/AuthModal.jsx";
 import TrackifyPanel from "./components/TrackifyPanel.jsx";
+import CopilotPanel from "./components/CopilotPanel.jsx";
 import { recommend, getHealth, getMe } from "./api.js";
 
 const HISTORY_KEY = "lumen.history.v1";
@@ -77,8 +78,11 @@ export default function App() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [trackifyOpen, setTrackifyOpen] = useState(false);
   const [trackifyInitialProduct, setTrackifyInitialProduct] = useState(null);
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
+  // Track how many searches done — first one is free, second needs login
+  const [chatCount, setChatCount] = useState(0);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -104,12 +108,7 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    if (authChecked && !user) {
-      setProfileOpen(true);
-      setDrawerOpen(false);
-    }
-  }, [authChecked, user]);
+  // NOTE: No auto-open of auth panel on load. User can freely browse the home page.
 
   useEffect(() => {
     saveHistory(history);
@@ -127,15 +126,17 @@ export default function App() {
     });
   };
 
-  const requireAuth = () => {
+  const requireAuth = (isChatAction = false) => {
     if (user) return true;
+    // First chat is free — allow it without login
+    if (isChatAction && chatCount === 0) return true;
+    // Second chat or any protected action → show auth
     setProfileOpen(true);
-    setError("Please login or signup to use LuMen - Smart Shopping Reader.");
     return false;
   };
 
   const runQuery = async (payload) => {
-    if (!requireAuth()) return;
+    if (!requireAuth(true)) return;
     setLoading(true);
     setError(null);
     setData(null);
@@ -144,6 +145,7 @@ export default function App() {
       const res = await recommend(payload);
       setData(res);
       pushHistory(payload.query);
+      setChatCount((c) => c + 1);
     } catch (e) {
       setError(e.message || "Something went wrong");
     } finally {
@@ -192,6 +194,8 @@ export default function App() {
         }}
         onOpenTrackify={() => openTrackify(null)}
         trackifyCount={0}
+        onOpenCopilot={() => setCopilotOpen(true)}
+        copilotActive={copilotOpen}
         user={user}
         onOpenProfile={() => setProfileOpen(true)}
         theme={theme}
@@ -207,13 +211,12 @@ export default function App() {
             onChange={setQuery}
             onSubmit={runQuery}
             loading={loading}
-            locked={authChecked && !user}
-            onRequireAuth={requireAuth}
+            locked={false}
+            onRequireAuth={() => requireAuth(false)}
           />
           <ExampleChips
             disabled={loading}
             onPick={(q) => {
-              if (!requireAuth()) return;
               setQuery(q);
               runQuery({ query: q, top_k: 6 });
             }}
@@ -222,6 +225,44 @@ export default function App() {
 
         <main className="mt-12 pb-24">
           <ConfigWarning health={health} />
+
+          {/* Login-to-continue nudge — shows after first search if not logged in */}
+          {!user && chatCount >= 1 && !loading && (
+            <div
+              className="mb-6 max-w-3xl rounded-2xl p-4 flex items-center justify-between gap-4"
+              style={{
+                background: "linear-gradient(135deg, rgba(99,102,241,0.1), rgba(139,92,246,0.1))",
+                border: "1.5px solid rgba(99,102,241,0.25)",
+              }}
+            >
+              <div className="flex items-center gap-3">
+                <div
+                  className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+                  style={{ background: "linear-gradient(135deg, #6366f1, #8b5cf6)" }}
+                >
+                  <span className="text-white text-base">🔒</span>
+                </div>
+                <div>
+                  <div className="font-semibold text-sm" style={{ color: "var(--color-ink-800, #1f2937)" }}>
+                    Login to continue searching
+                  </div>
+                  <div className="text-xs mt-0.5" style={{ color: "var(--color-ink-500, #6b7280)" }}>
+                    You've used your free search. Sign in to unlock unlimited access.
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setProfileOpen(true)}
+                className="shrink-0 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all"
+                style={{
+                  background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
+                  boxShadow: "0 4px 12px rgba(99,102,241,0.35)",
+                }}
+              >
+                Sign In / Sign Up
+              </button>
+            </div>
+          )}
 
           <AnimatePresence mode="wait">
             {loading && (
@@ -300,12 +341,10 @@ export default function App() {
         onRemove={(it) => toggleCompare(it)}
         onClear={clearCompare}
       />
-      <ProfilePanel
-        open={profileOpen || (authChecked && !user)}
+      <AuthModal
+        open={profileOpen}
         user={user}
-        onClose={() => {
-          if (user) setProfileOpen(false);
-        }}
+        onClose={() => setProfileOpen(false)}
         onAuth={(nextUser) => {
           setUser(nextUser);
           setError(null);
@@ -317,7 +356,8 @@ export default function App() {
           setCompare([]);
           setTrackifyOpen(false);
           setTrackifyInitialProduct(null);
-          setProfileOpen(true);
+          setChatCount(0);
+          setProfileOpen(false); // close panel, go back to home
         }}
       />
       <TrackifyPanel
@@ -325,6 +365,25 @@ export default function App() {
         user={user}
         initialProduct={trackifyInitialProduct}
         onClose={() => setTrackifyOpen(false)}
+      />
+      <CopilotPanel
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        searchContext={
+          data
+            ? {
+                query: data.query,
+                summary: data.summary,
+                products: data.results?.map((r) => ({
+                  title: r.title,
+                  url: r.url,
+                  price: r.price,
+                  reason: r.reason,
+                  source: r.source,
+                })),
+              }
+            : null
+        }
       />
     </div>
   );

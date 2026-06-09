@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { BellRing, Cpu, Globe, History, Layers, Moon, Sun, UserCircle } from "lucide-react";
+import { BellRing, Cpu, Globe, History, Layers, MessageCircle, Moon, Sun, UserCircle } from "lucide-react";
 
 export default function TopBar({
   providers,
@@ -9,6 +9,8 @@ export default function TopBar({
   onOpenCompare,
   onOpenTrackify,
   trackifyCount,
+  onOpenCopilot,
+  copilotActive,
   user,
   onOpenProfile,
   theme,
@@ -69,6 +71,15 @@ export default function TopBar({
           <ThemeToggle theme={theme} onToggle={onToggleTheme} />
 
           <HistoryButton history={history} onPick={onPickHistory} />
+
+          <button
+            onClick={onOpenCopilot}
+            className={`btn-ghost relative ${copilotActive ? "text-indigo-600" : ""}`}
+            title="AI Copilot"
+          >
+            <MessageCircle className="w-4 h-4" />
+            <span className="hidden sm:inline">Copilot</span>
+          </button>
 
           <button
             onClick={onOpenCompare}
