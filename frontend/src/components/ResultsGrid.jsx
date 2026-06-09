@@ -1,6 +1,6 @@
 import ProductCard from "./ProductCard.jsx";
 
-export default function ResultsGrid({ results, compareSet, onToggleCompare }) {
+export default function ResultsGrid({ results, compareSet, onToggleCompare, onOpenTrackify }) {
   if (!results || results.length === 0) return null;
   return (
     <section>
@@ -17,6 +17,7 @@ export default function ResultsGrid({ results, compareSet, onToggleCompare }) {
             index={i}
             selected={compareSet?.has(rec.url)}
             onToggleCompare={() => onToggleCompare(rec)}
+            onOpenTrackify={onOpenTrackify}
           />
         ))}
       </div>

@@ -23,6 +23,8 @@ export default function ExampleChips({ onPick, disabled }) {
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.04 * i, duration: 0.3 }}
+            whileHover={{ y: -2 }}
+            whileTap={{ scale: 0.98 }}
             disabled={disabled}
             onClick={() => onPick(ex)}
             className="chip disabled:opacity-50"

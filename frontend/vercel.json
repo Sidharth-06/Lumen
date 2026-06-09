@@ -6,6 +6,14 @@
     {
       "source": "/api/:path*",
       "destination": "https://YOUR-BACKEND.onrender.com/api/:path*"
+    },
+    {
+      "source": "/auth/:path*",
+      "destination": "https://YOUR-BACKEND.onrender.com/auth/:path*"
+    },
+    {
+      "source": "/trackify/:path*",
+      "destination": "https://YOUR-BACKEND.onrender.com/trackify/:path*"
     }
   ]
 }
