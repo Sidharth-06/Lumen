@@ -64,7 +64,7 @@ export default function CompareDrawer({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           onClick={onClose}
-          className="fixed inset-0 z-50 bg-ink-900/40 backdrop-blur-[3px]"
+          className="fixed inset-0 z-50 modal-overlay backdrop-blur-[3px]"
         >
           <motion.aside
             key="panel"
